@@ -12,11 +12,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    const pretty = b.dependency("pretty", .{
-        .target = target,
-        .optimize = opt,
-    });
-    exe.root_module.addImport("pretty", pretty.module("pretty"));
+//    const pretty = b.dependency("pretty", .{
+//        .target = target,
+//        .optimize = opt,
+//    });
+//    exe.root_module.addImport("pretty", pretty.module("pretty"));
 
     b.default_step.dependOn(&exe.step);
     const installStep = b.addInstallArtifact(exe, .{ .dest_dir = .default });
