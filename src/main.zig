@@ -121,10 +121,7 @@ const Digraph = struct {
             }
         }
 
-        self.explored = try std.DynamicBitSet.initEmpty(
-            self.alloc,
-            self.vertices.items.len,
-        );
+        self.explored.unmanaged.unsetAll();
     }
 
     // The pointer will be invalidated on updates to the arraylist containing
