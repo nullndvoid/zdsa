@@ -146,7 +146,7 @@ const Digraph = struct {
         const V = maybeV.?;
         const W = maybeW.?;
 
-        _ = try V.out.fetchPut(W.idx, {});
+        _ = try V.out.put(W.idx, {});
     }
 
     pub fn topoSort(self: *Digraph, startVertex: *Vertex, currentLabel: usize) !void {
