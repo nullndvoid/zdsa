@@ -109,22 +109,22 @@ const Digraph = struct {
 
         try queue.pushBack(s.*);
 
-        var visited = try std.DynamicBitSet.initEmpty(
-            self.alloc,
-            self.vertices.items.len - self.holes.items.len,
-        );
-
         while (queue.popFront()) |*v| {
             // Mark as visited and queue the out connections.
-            visited.set(v.idx);
+            self.explored.set(v.idx);
             std.debug.print("Visited: {s}, out: {any}\n", .{ v.name, v.out.keys() });
             var iter = v.out.iterator();
             while (iter.next()) |w| {
                 const vtx = self.vertices.items[w.key_ptr.*];
-                if (!visited.isSet(vtx.idx))
+                if (!self.explored.isSet(vtx.idx))
                     try queue.pushBack(vtx);
             }
         }
+
+        self.explored = try std.DynamicBitSet.initEmpty(
+            self.alloc,
+            self.vertices.items.len,
+        );
     }
 
     // The pointer will be invalidated on updates to the arraylist containing
