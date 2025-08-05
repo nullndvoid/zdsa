@@ -106,6 +106,7 @@ const Digraph = struct {
             self.alloc,
             self.vertices.items.len - self.holes.items.len,
         );
+        defer queue.deinit();
 
         try queue.pushBack(s.*);
 
@@ -166,13 +167,70 @@ const Digraph = struct {
 
         s.toposort = currentLabel;
     }
+
+    /// Frees any used resources.
+    pub fn deinit(self: *Digraph) void {
+        // Free the `out` hash map for each vertex
+        for (self.vertices.items) |*v| {
+            v.out.deinit();
+            // Also free the weights if they exist
+            if (v.weights) |*w| {
+                w.deinit();
+            }
+        }
+        // Free the vertices array list
+        self.vertices.deinit();
+        // Free the priority queue for holes
+        self.holes.deinit();
+        // Free the bitset
+        self.explored.deinit();
+    }
+
+    /// Returns the transpose of the graph (reversed edges).
+    pub fn transpose(self: *const Digraph) !Digraph {
+        var newG = try Digraph.init(self.alloc);
+
+        // First, copy all vertices to the new graph.
+        try newG.vertices.ensureTotalCapacity(self.vertices.items.len);
+        for (self.vertices.items) |v| {
+            try newG.vertices.append(Vertex{
+                .idx = v.idx,
+                .out = std.AutoHashMap(usize, void).init(self.alloc),
+            });
+        }
+
+        // Copy holes and currentIdx
+        newG.holes = self.holes;
+        newG.currentIdx = self.currentIdx;
+
+        // Now, iterate through the original graph's edges and reverse them.
+        for (self.vertices.items) |v| {
+            const vIdx = v.idx;
+            var it = v.out.iterator();
+            while (it.next()) |entry| {
+                const w = entry.key; // Edge from vIdx -> w
+
+                // Add the reversed edge: w -> vIdx in the new graph
+                // This is the core logic.
+                try newG.vertices.items[w].out.put(vIdx, {});
+            }
+        }
+
+        return newG;
+    }
 };
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const alloc = gpa.allocator();
+    defer {
+        const deinit_status = gpa.deinit();
+        if (deinit_status == .leak) std.testing.expect(false) catch @panic("Memory leaked!");
+    }
 
     var graph = try Digraph.init(alloc);
+    defer graph.deinit();
+
     var A = try graph.addVertex("A");
     var B = try graph.addVertex("B");
     var C = try graph.addVertex("C");
