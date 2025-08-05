@@ -96,7 +96,7 @@ pub fn RingBuffer(comptime T: type) type {
             const old_capacity = self.capacity();
             if (old_capacity >= new_capacity) return;
 
-            const new_buffer = try self.allocator.reallocAtLeast(self.buffer, new_capacity);
+            const new_buffer = try self.allocator.realloc(self.buffer, new_capacity);
             self.buffer = new_buffer;
 
             // The buffer can be in three possible states
@@ -111,14 +111,14 @@ pub fn RingBuffer(comptime T: type) type {
             if (self.head < old_capacity - self.tail) { // case 2)
                 // unwrap the head, moving after the tail
                 if (self.head > 0)
-                    std.mem.copy(T, self.buffer[old_capacity..], self.buffer[0..self.head]);
+                    @memcpy(self.buffer[old_capacity..], self.buffer[0..self.head]);
 
                 self.head = old_capacity + self.head;
             } else if (self.head > old_capacity - self.tail) { // case 3)
                 // shift the tail to the end of the array
 
                 const new_tail = new_capacity - (old_capacity - self.tail);
-                std.mem.copy(T, self.buffer[new_tail..], self.buffer[self.tail..old_capacity]);
+                @memcpy(self.buffer[new_tail..], self.buffer[self.tail..old_capacity]);
 
                 self.tail = new_tail;
             }
