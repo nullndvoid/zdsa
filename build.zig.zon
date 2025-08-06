@@ -1,12 +1,13 @@
 .{
-    .name = .DSA_ZIG,
-    .version = "0.15.0-dev.1283+1fcaf90dd",
-    .dependencies = .{
-        .pretty = .{
-            .url = "https://github.com/timfayz/pretty/archive/refs/heads/main.tar.gz",
-            .hash = "pretty-0.10.4-AAAAAM9GAQATvLkzFJ6-Y9r_NWCAC2Q4hOKxHSnJXQLD",
-        },
+    .name = .zdsa,
+    .version = "0.1.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "README.md",
+        "LICENSE",
     },
-    .paths = .{""},
-    .fingerprint = 0xf9e7115994112ee8,
+    .fingerprint = 0x54bf87e38f9998a8,
 }

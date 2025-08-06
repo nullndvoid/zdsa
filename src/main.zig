@@ -1,5 +1,5 @@
 const std = @import("std");
-const graph = @import("graph.zig");
+const zdsa = @import("zdsa");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -8,7 +8,7 @@ pub fn main() !void {
         if (gpa.deinit() == .leak) @panic("Memory leak detected");
     }
 
-    var G = try graph.Digraph.init(alloc);
+    var G = try zdsa.graph.Digraph.init(alloc);
     defer G.deinit();
 
     // Let's create some test vertices and run some algorithms on them.
