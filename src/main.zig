@@ -12,6 +12,8 @@ const Vertex = struct {
     dead: bool,
     /// Used in toposort to assign values to vertices. Also used by Kosaraju's algorithm.
     toposort: u32,
+    /// Used for Kosaraju's algorithm.
+    sccNumber: usize,
 };
 
 const Digraph = struct {
@@ -28,8 +30,6 @@ const Digraph = struct {
     alloc: std.mem.Allocator,
     /// Used to mark vertices as explored. Could maybe move this but cache locality is nice.
     explored: std.DynamicBitSet,
-    /// Used for Kosaraju's algorithm.
-    sccNumber: usize,
     /// Used for topoSort.
     currentLabel: usize,
 
@@ -55,7 +55,7 @@ const Digraph = struct {
             .alloc = alloc,
             .holes = Holes.init(alloc, {}),
             .explored = try std.DynamicBitSet.initEmpty(alloc, 1),
-            .sccNumber = 0,
+            .currentLabel = 0,
         };
     }
 
@@ -68,6 +68,7 @@ const Digraph = struct {
             .out = std.AutoArrayHashMap(usize, void).init(self.alloc),
             .toposort = 0,
             .weights = null,
+            .sccNumber = 0,
         };
 
         if (self.holes.removeOrNull()) |hole| {
@@ -163,45 +164,43 @@ const Digraph = struct {
         _ = try V.out.put(W.idx, {});
     }
 
-    /// Topological sort on the graph with `startVertex`. `Vertex.toposort` contains f(v) for a `Vertex` `v`.
-    /// # Return Value
-    ///
-    /// The last value of currentLabel.
-    pub fn topoSort(self: *Digraph, startVertex: *Vertex, currentLabel: usize) !void {
-        // The vertex is probably from another, larger graph.
-        const maybeS = self.getVertex(startVertex);
-        if (maybeS == null)
-            return .InvalidVertex;
+    /// A recursive DFS helper for topological sorting.
+    fn topoSortDFS(self: *Digraph, vertex: *Vertex, currentLabel: *usize) !void {
+        self.explored.set(vertex.idx);
 
-        const s = maybeS.?;
-
-        self.explored.set(s.idx);
-
-        // Terminate, this should be the base case for a DFS.
-        if (s.out.count() == 0) {
-            // Return the last value of currentLabel.
-            return currentLabel;
+        var iter = vertex.out.iterator();
+        while (iter.next()) |w| {
+            var vtx = self.vertices.items[w.key_ptr.*];
+            if (!self.explored.isSet(vtx.idx)) {
+                try topoSortDFS(self, &vtx, currentLabel);
+            }
         }
 
-        while (s.out.iterator().next()) |w| {
-            const vtx = self.vertices.items[w.value_ptr.*];
-            if (!self.explored.isSet(vtx.idx))
-                topoSort(self, vtx, currentLabel - 1);
-        }
+        vertex.toposort = @truncate(currentLabel.*);
+        currentLabel.* -= 1;
+    }
 
-        s.toposort = currentLabel;
-        return currentLabel;
+    /// The main public function to start the topological sort.
+    pub fn topoSort(self: *Digraph) !void {
+        self.explored.unmanaged.unsetAll();
+        var currentLabel = self.count();
+
+        for (self.vertices.items) |*v| {
+            if (!self.explored.isSet(v.idx)) {
+                try self.topoSortDFS(v, &currentLabel);
+            }
+        }
     }
 
     pub const TopoSortQueue = std.PriorityQueue(Vertex, void, greaterThan);
 
     // Build a priority queue from the toposort values -- this should only be called once all vertices have been explored.
     pub fn topoSortQueue(self: *Digraph) !TopoSortQueue {
-        const ownedVertices = try self.vertices.clone().toOwnedSlice();
-
+        var ownedVertices = try self.vertices.clone();
+        const ownedVerticesSlice = try ownedVertices.toOwnedSlice();
         const queue = TopoSortQueue.fromOwnedSlice(
             self.alloc,
-            ownedVertices,
+            ownedVerticesSlice,
             {},
         );
 
@@ -210,10 +209,9 @@ const Digraph = struct {
 
     /// Frees any used resources.
     pub fn deinit(self: *Digraph) void {
-        // Free the `out` hash map for each vertex
         for (self.vertices.items) |*v| {
             v.out.deinit();
-            // Also free the weights if they exist
+
             if (v.weights) |*w| {
                 w.deinit();
             }
@@ -227,31 +225,35 @@ const Digraph = struct {
     }
 
     /// Returns the transpose of the graph (reversed edges).
-    pub fn transpose(self: *const Digraph) !Digraph {
-        var reverseGraph = try Digraph.init(self.alloc);
+    pub fn transpose(self: *const Digraph, alloc: std.mem.Allocator) !Digraph {
+        var reverseGraph = try Digraph.init(alloc);
 
-        // First, copy all vertices to the new graph.
+        // First, copy all vertices to the new graph. O(V).
         try reverseGraph.vertices.ensureTotalCapacity(self.vertices.items.len);
         for (self.vertices.items) |v| {
-            try reverseGraph.vertices.append(Vertex{
-                .idx = v.idx,
-                .out = std.AutoHashMap(usize, void).init(self.alloc),
-            });
+            var vCopy = v;
+            vCopy.out = std.AutoArrayHashMap(usize, void).init(alloc);
+
+            if (v.weights) |w_orig| {
+                vCopy.weights = try w_orig.clone();
+            }
+
+            try reverseGraph.vertices.append(vCopy);
         }
 
-        // Copy holes and currentIdx
+        // Copy holes and currentIdx.
         reverseGraph.holes = self.holes;
         reverseGraph.currentIdx = self.currentIdx;
 
-        // Now, iterate through the original graph's edges and reverse them.
+        // Ensure explored bitset is large enough.
+        try reverseGraph.explored.resize(self.vertices.items.len, false);
+
         for (self.vertices.items) |v| {
             const vIdx = v.idx;
             var it = v.out.iterator();
             while (it.next()) |entry| {
-                const w = entry.key; // Edge from vIdx -> w
+                const w = entry.key_ptr.*; // Edge from vIdx -> w
 
-                // Add the reversed edge: w -> vIdx in the new graph
-                // This is the core logic.
                 try reverseGraph.vertices.items[w].out.put(vIdx, {});
             }
         }
@@ -259,28 +261,100 @@ const Digraph = struct {
         return reverseGraph;
     }
 
+    /// Performs a depth first search on the graph from `startVertex`.
+    /// This returns a slice of `Vertex` in the order they were explored.
+    pub fn dfs(self: *Digraph, startVertex: *Vertex) ![]Vertex {
+        const maybeS = self.getVertex(startVertex);
+        if (maybeS == null)
+            return Error.InvalidVertex;
+        const S = maybeS.?;
+        var stack = try RingBuffer(Vertex).initCapacity(self.alloc, self.count());
+        defer stack.deinit();
+
+        try stack.pushFront(S.*);
+
+        var queue = RingBuffer(Vertex).init(self.alloc);
+        defer queue.deinit();
+
+        while (stack.popFront()) |v| {
+            self.explored.set(v.idx);
+            try queue.pushBack(v);
+
+            for (v.out.keys()) |idx| {
+                if (self.explored.isSet(idx)) continue;
+
+                try stack.pushFront(self.vertices.items[idx]);
+            }
+        }
+
+        const ownedSlice = try self.alloc.alloc(Vertex, queue.buffer.len);
+        @memcpy(ownedSlice, queue.buffer);
+
+        return ownedSlice;
+    }
+
     /// Returns a set containing the SCCs in the graph, that is to say, a set of
     /// *maximal sets of vertices, called V, in which for any two vertices $v_1, v_2 \in V$,
     /// there exists a two way path between them.*
-    pub fn kosaraju() !void {}
+    pub fn kosaraju(self: *Digraph) !void {
+        // Pass 1: DFS on G to compute finish times.
+        try self.topoSort();
 
-    /// Used in first pass of Kosaraju's algorithm. Simply topoSorts all vertices in the graph.
-    fn computeTransposeFinishTimes(self: *Digraph) !void {
-        // Clear the explored set.
+        // Pass 2: Create a priority queue from G's vertices ordered by finish time.
+        var vertices_by_ft = try self.topoSortQueue();
+        defer vertices_by_ft.deinit();
+
+        // Reset explored set for the second pass.
         self.explored.unmanaged.unsetAll();
 
-        // Now, we can do something like this.
-        for (self.vertices.items) |*v| {
-            try self.topoSort(
-                v,
-                self.currentLabel,
-            );
+        // Pass 3: Create the transpose graph.
+        var rev = try self.transpose(self.alloc);
+        defer rev.deinit();
+
+        var sccNumber: u32 = 0;
+
+        // Iterate through vertices in decreasing order of finish times.
+        while (vertices_by_ft.removeOrNull()) |v_orig| {
+            // We get a vertex from the original graph, which holds the correct finish time.
+            // We only care about its index.
+            const start_idx = v_orig.idx;
+            if (self.explored.isSet(start_idx)) {
+                continue;
+            }
+
+            // Now, perform a DFS on the transposed graph `rev`,
+            // starting from `start_idx`. This will find one SCC.
+            var stack = std.ArrayList(u32).init(self.alloc);
+            defer stack.deinit();
+
+            try stack.append(start_idx);
+            self.explored.set(start_idx);
+
+            while (stack.pop()) |curr_idx| {
+                // Assign the SCC number to the vertex in the original graph.
+                self.vertices.items[curr_idx].sccNumber = sccNumber;
+
+                // Get the corresponding vertex from the transposed graph.
+                var rev_v = &rev.vertices.items[curr_idx];
+
+                // And traverse its outgoing edges in the transposed graph.
+                var iter = rev_v.out.iterator();
+                while (iter.next()) |entry| {
+                    const neighbor_idx = entry.key_ptr.*;
+                    if (!self.explored.isSet(neighbor_idx)) {
+                        try stack.append(@truncate(neighbor_idx));
+                        self.explored.set(neighbor_idx);
+                    }
+                }
+            }
+
+            sccNumber += 1;
         }
     }
 
     /// Returns the count of `Vertex`'es in the `Digraph`.
     pub fn count(self: *const Digraph) usize {
-        return self.vertices.items.len - self.holes.len;
+        return self.vertices.items.len - self.holes.items.len;
     }
 };
 
@@ -299,12 +373,23 @@ pub fn main() !void {
     var B = try graph.addVertex("B");
     var C = try graph.addVertex("C");
     var D = try graph.addVertex("D");
+    var E = try graph.addVertex("E");
+    var F = try graph.addVertex("F");
 
     try graph.connect(&A, &B);
     try graph.connect(&B, &C);
     try graph.connect(&D, &C);
     try graph.connect(&C, &D);
     try graph.connect(&D, &A);
+    try graph.connect(&D, &E);
+    try graph.connect(&E, &F);
 
     try graph.bfs(&A);
+
+    // Let's try Kosaraju's and see how many bugs we can dredge up.
+    try graph.kosaraju();
+
+    for (graph.vertices.items) |v| {
+        std.debug.print("{s} is in SCC#{d}\n", .{ v.name, v.sccNumber });
+    }
 }
