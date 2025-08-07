@@ -255,7 +255,7 @@ pub const Digraph = struct {
         }
     }
 
-    /// A min-heap priority queue returning Vertices by their f(v) values in increasing order.
+    /// A min-heap priority queue where dequeueing will yield vertices in decreasing order of finishing time.
     pub const TopoSortQueue = std.PriorityQueue(Vertex, void, minTopoSort);
 
     /// Returns an increasing order priority queue sorting vertices by f(v) (`toposort` field).
