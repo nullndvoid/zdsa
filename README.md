@@ -1,22 +1,31 @@
 # zdsa - Zig Data Structures & Algorithms
 
-Implementations of common data structures and algorithms in Zig. This repository contains code developed for learning and revision purposes.
+Implementations of common data structures and algorithms in Zig. This repository contains code developed for learning and revision purposes. All implementations are accompanied by comprehensive tests and documentation comments to ensure correctness and clarity.
 
 ## Features
 
-It currently contains a directed graph (`Digraph`) implementation with several standard algorithms.
+### Data Structures
+* **Directed Graph**: Using an adjacency list representation.
+* **Priority Queue**: For managing recycled vertex IDs.
 
-* **Data Structures**
-    * Directed Graph using an adjacency list representation
-    * Priority Queue for managing recycled vertex IDs (not entirely required but nice to have).
+### Algorithms
 
-* **Graph Traversal & Algorithms**
-    * Breadth-First Search (BFS)
-    * Depth-First Search (DFS)
-    * Topological Sort
-    * Kosaraju's Algorithm for finding Strongly Connected Components (SCCs)
+#### Sorting Algorithms
+* Bubble Sort
+* Insertion Sort
+* Merge Sort
+* Quick Sort
 
-## TODO:
+#### Graph Algorithms
+* Breadth-First Search (BFS)
+* Depth-First Search (DFS)
+* Topological Sort
+* Kosaraju's Algorithm for finding Strongly Connected Components (SCCs)
+
+#### Classic Problems
+* Two Sum
+
+## TODO
 
 * A Dijkstra's shortest path and/or A* implementation.
 
