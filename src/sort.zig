@@ -4,8 +4,24 @@
 
 const std = @import("std");
 
+/// Simple sorting function: uses insertion sort for small lists, and merge sort
+/// for lists of n > 15.
+pub fn sort(comptime T: type, alloc: std.mem.Allocator, list: []T, comparatorFn: fn (lhs: T, rhs: T) std.math.Order) !void {
+    if (list.len < 2) return;
+
+    // If small, just insertion sort it.
+    if (list.len <= 15) {
+        insertionSort(T, list, comparatorFn);
+        return;
+    }
+
+    try mergeSort(T, comparatorFn).sort(alloc, list);
+}
+
 /// Bubble sort. This has an upper bound time complexity of O(n^2).
 pub fn bubbleSort(comptime T: type, list: []T, comparatorFn: fn (lhs: T, rhs: T) std.math.Order) void {
+    if (list.len < 2) return;
+
     for (0..list.len - 1) |_| {
         for (0..list.len - 1) |j| {
             const left = list[j];
@@ -22,26 +38,27 @@ pub fn bubbleSort(comptime T: type, list: []T, comparatorFn: fn (lhs: T, rhs: T)
 }
 
 /// Insertion sorts a list, has an upper bound O(n^2) time complexity, although
-/// this is good for small lists n < 12 or so.
+/// this is good for small lists n < 12 or so. Best case is O(n) for a sorted list.
 pub fn insertionSort(comptime T: type, list: []T, comparatorFn: fn (lhs: T, rhs: T) std.math.Order) void {
-    for (0..list.len - 1) |i| {
-        var insertAt = i + 1;
-        var needsSwap = false;
+    if (list.len < 2) return;
 
-        for (i + 1..list.len) |j| {
-            const left = list[i];
-            const right = list[j];
+    for (1..list.len) |i| {
+        const key = list[i];
 
-            const order = comparatorFn(left, right);
+        // `j` will represent the insertion point. It starts at `i`.
+        var j = i;
 
-            if (order.compare(.gt)) {
-                insertAt = j;
-                needsSwap = true;
-                continue;
-            }
+        // Loop while `j` is not at the start of the list to prevent underflow,
+        // and the element to the left (`j - 1`) is greater than our key.
+        while (j > 0 and comparatorFn(list[j - 1], key) == .gt) {
+            // The element to the left is too big, so shift it into the empty slot `j`.
+            list[j] = list[j - 1];
+            // Move the empty slot one position to the left.
+            j -= 1;
         }
 
-        if (needsSwap) swapElems(T, list, i, insertAt);
+        // The loop has finished, so `j` is now the correct insertion point for the key.
+        list[j] = key;
     }
 }
 
@@ -135,9 +152,93 @@ pub fn mergeSort(comptime T: type, comparatorFn: fn (lhs: T, rhs: T) std.math.Or
     };
 }
 
+pub fn quickSort(comptime T: type, comparatorFn: fn (lhs: T, rhs: T) std.math.Order) type {
+    return struct {
+        rand: std.Random.DefaultPrng,
+
+        const Self = @This();
+
+        pub fn init() !Self {
+            const prng = std.Random.DefaultPrng.init(blk: {
+                var seed: u64 = undefined;
+                try std.posix.getrandom(std.mem.asBytes(&seed));
+                break :blk seed;
+            });
+
+            return Self{
+                .rand = prng,
+            };
+        }
+
+        pub fn sort(self: *Self, slice: []T) void {
+            if (slice.len <= 1) return;
+            self.sortRecursive(slice, 0, slice.len - 1);
+        }
+
+        fn sortRecursive(self: *Self, slice: []T, left: usize, right: usize) void {
+            if (left >= right) return;
+
+            const pivotIdx = self.rand.random().intRangeAtMost(usize, left, right);
+
+            // Partition the array and then call sort on either side.
+
+            const newPivotIdx = self.partition(slice, pivotIdx, left, right);
+
+            if (newPivotIdx > left) {
+                self.sortRecursive(slice, left, newPivotIdx - 1);
+            }
+
+            self.sortRecursive(slice, newPivotIdx + 1, right);
+        }
+
+        /// Partitions the array around a pivot at `pivotIdx`. Entries less
+        /// than pivot are placed leftwards, and greater than or equal are
+        /// placed at pivotIdx + 1, ..., self.array.len - 1.
+        ///
+        /// `start`: Starting index for the partition operation.
+        /// `end`: Ending index for the partition operation.
+        ///
+        /// `start` <= `pivotIdx` <= `end`.
+        fn partition(self: *Self, slice: []T, pivotIdx: usize, start: usize, end: usize) usize {
+            _ = self;
+
+            // Get the pivot out of the way.
+            swapElems(T, slice, pivotIdx, start);
+            const pivot = slice[start];
+
+            var i: usize = start + 1;
+            var j: usize = end;
+
+            while (true) {
+                while (i <= end and comparatorFn(slice[i], pivot).compare(.lte)) {
+                    i += 1;
+                }
+
+                while (j > start and comparatorFn(slice[j], pivot).compare(.gt)) {
+                    j -= 1;
+                }
+
+                if (i >= j) break;
+
+                swapElems(T, slice, i, j);
+                i += 1;
+                j -= 1;
+            }
+
+            swapElems(T, slice, start, j);
+
+            return j;
+        }
+    };
+}
+
 /// Just a wrapper for sorting lists of u8 in ascending order.
 pub fn orderU8(lhs: u8, rhs: u8) std.math.Order {
     return std.math.order(lhs, rhs);
+}
+
+pub fn reverseOrderU8(lhs: u8, rhs: u8) std.math.Order {
+    return std.math.order(rhs, lhs);
 }
 
 /// Swaps two elements in a list.
@@ -191,5 +292,47 @@ test "mergeSortOneElement" {
     const alloc = std.testing.allocator;
 
     try mergeSort(u8, orderU8).sort(alloc, toSort[0..]);
+    try std.testing.expectEqualSlices(u8, &expected, &toSort);
+}
+
+test "quickSortOneElement" {
+    const expected = [_]u8{1};
+    var toSort = [_]u8{1};
+
+    var sorter = try quickSort(u8, orderU8).init();
+
+    sorter.sort(toSort[0..]);
+
+    try std.testing.expectEqualSlices(u8, &expected, &toSort);
+}
+
+test "quickSortReverseOrderedList" {
+    const expected = [_]u8{ 1, 2, 4, 7, 9, 10, 12 };
+    var toSort = [_]u8{ 12, 10, 9, 7, 4, 2, 1 };
+
+    var sorter = try quickSort(u8, orderU8).init();
+
+    sorter.sort(toSort[0..]);
+
+    try std.testing.expectEqualSlices(u8, &expected, &toSort);
+}
+
+test "sortReverseOrderedList" {
+    const expected = [_]u8{ 1, 4, 5, 6, 7, 8, 9, 10, 14, 15, 19, 21, 102, 204, 205, 231 };
+    var toSort = [_]u8{ 231, 205, 204, 102, 21, 19, 15, 14, 10, 9, 8, 7, 6, 5, 4, 1 };
+
+    const alloc = std.testing.allocator;
+
+    try sort(u8, alloc, toSort[0..], orderU8);
+    try std.testing.expectEqualSlices(u8, &expected, &toSort);
+}
+
+test "reverseSort" {
+    var toSort = [_]u8{ 1, 4, 5, 6, 7, 8, 9, 10, 14, 15, 19, 21, 102, 204, 205, 231 };
+    const expected = [_]u8{ 231, 205, 204, 102, 21, 19, 15, 14, 10, 9, 8, 7, 6, 5, 4, 1 };
+
+    const alloc = std.testing.allocator;
+
+    try sort(u8, alloc, toSort[0..], reverseOrderU8);
     try std.testing.expectEqualSlices(u8, &expected, &toSort);
 }
