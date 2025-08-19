@@ -20,15 +20,15 @@ pub fn main() !void {
     defer G.deinit();
 
     // Let's create some test vertices and run some algorithms on them.
-    const labubu = try G.addVertex("Labubu");
-    const dubaiChocolate = try G.addVertex("Dubai chocolate");
-    const matcha = try G.addVertex("Matcha");
+    const A = try G.addVertex("A");
+    const B = try G.addVertex("B");
+    const C = try G.addVertex("C");
+    const D = try G.addVertex("D");
 
-    // It's very easy to connect vertices. Note that these are arcs, not edges.
-    try G.connect(labubu, dubaiChocolate);
-    try G.connect(matcha, dubaiChocolate);
-    try G.connect(dubaiChocolate, dubaiChocolate);
-    try G.connect(matcha, labubu);
+    try G.connect(A, B);
+    try G.connect(B, D);
+    try G.connect(C, A);
+    try G.connect(B, C);
 
     // Let's find the strongly connected components.
     try G.kosaraju();
