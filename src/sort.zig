@@ -21,9 +21,10 @@ pub fn sort(comptime T: type, alloc: std.mem.Allocator, list: []T, comparatorFn:
 /// Bubble sort. This has an upper bound time complexity of O(n^2).
 pub fn bubbleSort(comptime T: type, list: []T, comparatorFn: fn (lhs: T, rhs: T) std.math.Order) void {
     if (list.len < 2) return;
+    var swapped = false;
 
-    for (0..list.len - 1) |_| {
-        for (0..list.len - 1) |j| {
+    for (0..list.len - 1) |i| {
+        for (0..list.len - 1 - i) |j| {
             const left = list[j];
             const right = list[j + 1];
 
@@ -32,8 +33,13 @@ pub fn bubbleSort(comptime T: type, list: []T, comparatorFn: fn (lhs: T, rhs: T)
             if (order.compare(.gt)) {
                 // Swap.
                 swapElems(T, list, j, j + 1);
+                swapped = true;
+            } else {
+                swapped = false;
             }
         }
+
+        if (swapped == false) return;
     }
 }
 
