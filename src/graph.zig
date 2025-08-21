@@ -6,16 +6,28 @@ pub const VertexId = struct {
     id: u32,
 };
 
+/// The distance between a source vertex and "this one".
+pub const Distance = union(enum) { Infinite, Finite: u32 };
+
 /// A `Vertex` in a graph. Stores a name, although I may make this generic over
 /// other data types later. Also stores some extra metadata used by graph traversal
 /// algorithms.
 const Vertex = struct {
+    /// The name of the `Vertex`.
     name: []const u8,
-    out: std.AutoArrayHashMap(u32, void),
-    weights: ?std.ArrayList(u32),
+    /// The value is the weight of the edge. This will be 0 for unweighted graphs.
+    out: std.AutoArrayHashMap(u32, u32),
     _id: VertexId,
+    /// The previous `Vertex` in the shortest path.
+    prev: ?VertexId,
+    /// TODO: The hop distance if graph is unweighted, or distance from a source
+    /// node set after calling `Digraph.dijkstra`.
+    distance: u32,
+    /// If the vertex was removed from the graph.
     dead: bool,
+    /// The f(v) value assigned in a topological sort of the `Digraph`.
     toposort: u32,
+    /// What SCC the node resides in, set after calling `Digraph.kosaraju`.
     sccNumber: usize,
 
     pub fn getId(self: *const Vertex) VertexId {
@@ -41,6 +53,11 @@ pub const Digraph = struct {
         /// The vertex was deleted from the graph.
         VertexIsDead,
     };
+
+    /// Set if Kosaraju's has not been applied yet, or if the graph was mutated.
+    kosarajuDirty: bool = true,
+    topoSortDirty: bool = true,
+    djikstraDirty: bool = true,
 
     /// A list of vertices in the `Digraph`.
     vertices: std.ArrayList(Vertex),
@@ -71,13 +88,19 @@ pub const Digraph = struct {
         var id: VertexId = .{ .id = 0 };
         const owned_name = try self.alloc.dupe(u8, name);
 
+        // Update the flags just so we know when data is out of date.
+        self.djikstraDirty = true;
+        self.kosarajuDirty = true;
+        self.topoSortDirty = true;
+
         var v = Vertex{
+            .distance = 0,
+            .prev = null,
             .dead = false,
             ._id = undefined,
             .name = owned_name,
-            .out = std.AutoArrayHashMap(u32, void).init(self.alloc),
+            .out = std.AutoArrayHashMap(u32, u32).init(self.alloc),
             .toposort = 0,
-            .weights = null,
             .sccNumber = 0,
         };
 
@@ -116,12 +139,19 @@ pub const Digraph = struct {
         self.vertices.items[id.id].dead = true;
     }
 
-    /// Connects two vertices with an arc (v, w). This is unidirectional.
-    pub fn connect(self: *Digraph, v_id: VertexId, w_id: VertexId) !void {
+    /// Connects two vertices with an arc (v, w) and optional weight. This is
+    /// unidirectional.
+    ///
+    /// # Note
+    ///
+    /// If a weight is not given, 0 is assigned.
+    pub fn connect(self: *Digraph, v_id: VertexId, w_id: VertexId, weight: ?u32) !void {
+        const edgeWeight = weight orelse 0;
+
         const V = try self.getVertexById(v_id);
         const W = try self.getVertexById(w_id);
 
-        try V.out.put(W.getId().id, {});
+        try V.out.put(W.getId().id, edgeWeight);
     }
 
     /// A helper function to get a `*Vertex` by it's `VertexId`.
@@ -210,9 +240,6 @@ pub const Digraph = struct {
         for (self.vertices.items) |*v| {
             self.alloc.free(v.name);
             v.out.deinit();
-            if (v.weights) |*w| {
-                w.deinit();
-            }
         }
         self.vertices.deinit();
         self.holes.deinit();
@@ -275,8 +302,8 @@ pub const Digraph = struct {
         for (self.vertices.items) |v| {
             var vCopy = v;
             vCopy.name = try alloc.dupe(u8, v.name);
-            vCopy.out = std.AutoArrayHashMap(u32, void).init(alloc);
-            if (v.weights) |w_orig| vCopy.weights = try w_orig.clone();
+            vCopy.out = std.AutoArrayHashMap(u32, u32).init(alloc);
+
             try reverseGraph.vertices.append(vCopy);
         }
 
@@ -289,10 +316,12 @@ pub const Digraph = struct {
         for (self.vertices.items) |v| {
             if (v.dead) continue;
             const v_id = v.getId().id;
+
             var it = v.out.iterator();
             while (it.next()) |entry| {
                 const w_id = entry.key_ptr.*;
-                try reverseGraph.vertices.items[w_id].out.put(v_id, {});
+                const w_weight = entry.value_ptr.*;
+                try reverseGraph.vertices.items[w_id].out.put(v_id, w_weight);
             }
         }
 
@@ -370,5 +399,12 @@ pub const Digraph = struct {
     fn minTopoSort(context: void, a: Vertex, b: Vertex) std.math.Order {
         _ = context;
         return std.math.order(a.toposort, b.toposort);
+    }
+
+    fn djikstra(self: *Digraph, source: VertexId) !void {
+        // Reset as per uni pseudocode.
+        self.explored.unmanaged.unsetAll();
+
+        var sourceVertex = try self.getVertexById(source);
     }
 };

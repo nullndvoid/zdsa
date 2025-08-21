@@ -25,10 +25,10 @@ pub fn main() !void {
     const C = try G.addVertex("C");
     const D = try G.addVertex("D");
 
-    try G.connect(A, B);
-    try G.connect(B, D);
-    try G.connect(C, A);
-    try G.connect(B, C);
+    try G.connect(A, B, 12);
+    try G.connect(B, D, 2);
+    try G.connect(C, A, 4);
+    try G.connect(B, C, 6);
 
     // Let's find the strongly connected components.
     try G.kosaraju();
