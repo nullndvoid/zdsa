@@ -7,7 +7,50 @@ pub const VertexId = struct {
 };
 
 /// The distance between a source vertex and "this one".
-pub const Distance = union(enum) { Infinite, Finite: u32 };
+pub const Distance = union(enum) {
+    Infinite,
+    Finite: u32,
+
+    /// Returns the ordering of this and another distance.
+    pub fn cmp(self: *const Distance, other: Distance) std.math.Order {
+        const Order = std.math.Order;
+
+        return switch (self.*) {
+            .Infinite => switch (other) {
+                .Infinite => Order.eq,
+                .Finite => |_| Order.gt,
+            },
+            .Finite => |v| switch (other) {
+                .Infinite => Order.lt,
+                .Finite => |o| std.math.order(v, o),
+            },
+        };
+    }
+
+    /// Used by std.fmt to print as a string. Use with {f}.
+    pub fn format(
+        self: *const Distance,
+        // Kill Andrew Kelley or whoever made this decision to use {f},
+        // not that I would normally care.
+        //
+        //       comptime fmt: []const u8,
+        //       _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        switch (self.*) {
+            .Finite => |d| try writer.print("{d}", .{d}),
+            .Infinite => try writer.writeAll("∞"),
+        }
+    }
+
+    /// Whether or not the distance is set to Infinite.
+    pub inline fn isInfinite(self: *const Distance) bool {
+        return switch (self.*) {
+            .Infinite => true,
+            else => false,
+        };
+    }
+};
 
 /// A `Vertex` in a graph. Stores a name, although I may make this generic over
 /// other data types later. Also stores some extra metadata used by graph traversal
@@ -22,7 +65,7 @@ const Vertex = struct {
     prev: ?VertexId,
     /// TODO: The hop distance if graph is unweighted, or distance from a source
     /// node set after calling `Digraph.dijkstra`.
-    distance: u32,
+    distance: Distance = .Infinite,
     /// If the vertex was removed from the graph.
     dead: bool,
     /// The f(v) value assigned in a topological sort of the `Digraph`.
@@ -30,6 +73,7 @@ const Vertex = struct {
     /// What SCC the node resides in, set after calling `Digraph.kosaraju`.
     sccNumber: usize,
 
+    /// I want to imply that this field is private, so the getter might just look nicer.
     pub fn getId(self: *const Vertex) VertexId {
         return self._id;
     }
@@ -58,6 +102,7 @@ pub const Digraph = struct {
     kosarajuDirty: bool = true,
     topoSortDirty: bool = true,
     djikstraDirty: bool = true,
+    lastSourceVertex: ?VertexId = null,
 
     /// A list of vertices in the `Digraph`.
     vertices: std.ArrayList(Vertex),
@@ -94,7 +139,7 @@ pub const Digraph = struct {
         self.topoSortDirty = true;
 
         var v = Vertex{
-            .distance = 0,
+            .distance = .Infinite,
             .prev = null,
             .dead = false,
             ._id = undefined,
@@ -272,6 +317,10 @@ pub const Digraph = struct {
     /// Topologically sorts the whole graph. This ensures every `Vertex` has an
     /// assigned `toposort` value. This function has a time complexity of O(n + m).
     pub fn topoSort(self: *Digraph) !void {
+        if (self.topoSortDirty) return;
+
+        self.topoSortDirty = false;
+
         self.explored.unmanaged.unsetAll();
         var currentLabel = self.count();
 
@@ -342,6 +391,10 @@ pub const Digraph = struct {
     ///
     /// Typically returns an error if allocations failed, i.e. OOM.
     pub fn kosaraju(self: *Digraph) !void {
+        if (self.kosarajuDirty) return;
+
+        self.kosarajuDirty = false;
+
         try self.topoSort();
         var vertices_by_ft = try self.topoSortQueue();
         defer vertices_by_ft.deinit();
@@ -401,10 +454,86 @@ pub const Digraph = struct {
         return std.math.order(a.toposort, b.toposort);
     }
 
-    fn djikstra(self: *Digraph, source: VertexId) !void {
-        // Reset as per uni pseudocode.
+    /// Return the ordering of two vertices such that a min heap is formed.
+    fn minDistance(context: void, a: IdDistancePair, b: IdDistancePair) std.math.Order {
+        _ = context;
+
+        return a.dist.cmp(b.dist);
+    }
+
+    /// Used for sorting rather than using copies of vertices.
+    const IdDistancePair = struct { id: VertexId, dist: Distance };
+
+    /// Finds the shortest paths to all nodes from a source node.
+    pub fn djikstra(self: *Digraph, source: VertexId) !void {
+        if (!self.djikstraDirty) {
+            if (self.lastSourceVertex) |s| if (s.id == source.id) return;
+        }
+
+        // Reset X and init distances as per uni pseudocode.
         self.explored.unmanaged.unsetAll();
 
         var sourceVertex = try self.getVertexById(source);
+
+        self.lastSourceVertex = source;
+
+        var queue = std.PriorityQueue(
+            IdDistancePair,
+            void,
+            minDistance,
+        ).init(self.alloc, {});
+
+        defer queue.deinit();
+
+        // Clear out state.
+        for (self.vertices.items) |*v| {
+            v.distance = .Infinite;
+            v.prev = null;
+        }
+
+        sourceVertex.distance = .{ .Finite = 0 };
+
+        // Initialise the queue with just the source vertex.
+        try queue.add(.{
+            .dist = sourceVertex.distance,
+            .id = source,
+        });
+
+        while (queue.removeOrNull()) |w| {
+            var wVertex = try self.getVertexById(w.id);
+
+            // Skip stale entries in our queue.
+            if (w.dist.cmp(wVertex.distance).compare(.gt)) {
+                continue;
+            }
+
+            // A path is finalised when we pull it out of the queue. Think of
+            // this as the frontier.
+            self.explored.set(w.id.id);
+
+            var iter = wVertex.out.iterator();
+            while (iter.next()) |e| {
+                const Y = VertexId{ .id = e.key_ptr.* };
+                const edgeWeight = e.value_ptr.*;
+
+                if (self.explored.isSet(Y.id)) continue;
+
+                const prevDist = if (!wVertex.distance.isInfinite())
+                    wVertex.distance.Finite
+                else
+                    0;
+
+                const len = Distance{ .Finite = edgeWeight + prevDist };
+
+                var y = try self.getVertexById(Y);
+                if (y.distance.cmp(len).compare(.lt)) continue;
+
+                y.distance = len;
+
+                // Update the queue and previous pointer.
+                try queue.add(IdDistancePair{ .id = Y, .dist = len });
+                y.prev = wVertex.getId();
+            }
+        }
     }
 };

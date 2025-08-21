@@ -8,13 +8,13 @@ pub fn main() !void {
         if (gpa.deinit() == .leak) @panic("Memory leak detected");
     }
 
-    var cands = [_]u8{ 1, 5, 6, 2, 9, 8, 7, 4, 11, 10, 20 };
-    const sums = try twoSum(alloc, cands[0..], 12);
+    // var cands = [_]u8{ 1, 5, 6, 2, 9, 8, 7, 4, 11, 10, 20 };
+    // const sums = try twoSum(alloc, cands[0..], 12);
 
-    for (sums) |p| {
-        std.debug.print("{d} + {d} = 12\n", .{ p.a, p.b });
-    }
-    defer alloc.free(sums);
+    // for (sums) |p| {
+    //     std.debug.print("{d} + {d} = 12\n", .{ p.a, p.b });
+    // }
+    // defer alloc.free(sums);
 
     var G = try zdsa.graph.Digraph.init(alloc);
     defer G.deinit();
@@ -26,15 +26,26 @@ pub fn main() !void {
     const D = try G.addVertex("D");
 
     try G.connect(A, B, 12);
+    try G.connect(B, A, 7);
     try G.connect(B, D, 2);
     try G.connect(C, A, 4);
     try G.connect(B, C, 6);
+    try G.connect(C, D, 2);
+    try G.connect(A, D, 9);
+    try G.connect(A, C, 1);
+    try G.connect(D, B, 1);
 
     // Let's find the strongly connected components.
     try G.kosaraju();
+    // ... And the shortest paths from A to all other nodes.
+    try G.djikstra(A);
 
     for (G.vertices.items) |*v| {
         std.debug.print("* {s} is in SCC #{d}.\n", .{ v.name, v.sccNumber });
+
+        if (v.prev == null) continue;
+        // TODO: Make an iterator struct to collect the path. Also, this is just a singly linked list.
+        std.debug.print("The shortest path from A to {s} is: {f}\n", .{ v.name, v.distance });
     }
 }
 
