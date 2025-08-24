@@ -72,6 +72,8 @@ const Vertex = struct {
     toposort: u32,
     /// What SCC the node resides in, set after calling `Digraph.kosaraju`.
     sccNumber: usize,
+    /// The next vertex in a path as found by DFS/BFS.
+    next: ?*Vertex = null,
 
     /// I want to imply that this field is private, so the getter might just look nicer.
     pub fn getId(self: *const Vertex) VertexId {
@@ -204,7 +206,7 @@ pub const Digraph = struct {
     /// # Errors
     ///
     /// Returns an error if the vertex was invalid, or dead (deleted from the graph).
-    pub fn getVertexById(self: *Digraph, id: VertexId) !*Vertex {
+    pub fn getVertexById(self: *const Digraph, id: VertexId) !*Vertex {
         if (id.id >= self.vertices.items.len) {
             return Error.InvalidVertex;
         }
@@ -245,6 +247,103 @@ pub const Digraph = struct {
         }
 
         self.explored.unmanaged.unsetAll();
+    }
+
+    fn setForwardPointers(self: *Digraph, sink: *Vertex) void {
+        var v = sink;
+        while (v.prev) |id| {
+            const prev = self.getVertexById(id) catch unreachable;
+
+            // Update next pointer.
+            prev.next = v;
+
+            v = prev;
+        }
+    }
+
+    /// Finds a path from a source to a sink vertex via DFS and stores it
+    /// using the `prev` pointers on each Vertex.
+    pub fn dfsTo(self: *Digraph, from: VertexId, to: VertexId) !bool {
+        const T = try self.getVertexById(to);
+
+        // Reset previous path data
+        for (self.vertices.items) |*v| {
+            v.prev = null;
+        }
+
+        var stack = std.ArrayList(VertexId).init(self.alloc);
+        defer stack.deinit();
+
+        self.explored.unmanaged.unsetAll();
+
+        try stack.append(from);
+        self.explored.set(from.id);
+
+        while (stack.pop()) |v_id| {
+            if (v_id.id == T.getId().id) {
+                // We found the destination, path is complete.
+                self.setForwardPointers(T);
+                return true;
+            }
+
+            const vtx = self.getVertexById(v_id) catch unreachable;
+            var iter = vtx.out.iterator();
+            while (iter.next()) |entry| {
+                const neighbourId = VertexId{ .id = entry.key_ptr.* };
+                if (!self.explored.isSet(neighbourId.id)) {
+                    self.explored.set(neighbourId.id);
+
+                    // Set the predecessor of the neighbor to the current vertex
+                    const w = self.getVertexById(neighbourId) catch unreachable;
+                    w.prev = v_id;
+
+                    try stack.append(neighbourId);
+                }
+            }
+        }
+
+        // Destination was not reachable. Forward pointers will be undefined.
+        return false;
+    }
+
+    pub const PathIterator = struct {
+        current: ?*Vertex = null,
+
+        const Self = @This();
+
+        pub fn init(g: *const Digraph, sink: VertexId) Self {
+            var vtx = g.getVertexById(sink) catch unreachable;
+
+            while (vtx.prev != null) {
+                // if (vtx.prev == null) break;
+                const prev = g.getVertexById(vtx.prev.?) catch unreachable;
+                vtx = prev;
+            }
+
+            return Self{ .current = vtx };
+        }
+
+        pub fn next(s: *Self) ?*Vertex {
+            // 1. Save the vertex we're going to return this iteration.
+            const to_return = s.current;
+
+            // If the iterator is already finished (current is null), just return null.
+            if (to_return == null) {
+                return null;
+            }
+
+            // 2. Advance our internal state for the *next* call.
+            //    to_return is a `?*Vertex`, so we use `.?` to access its `next` field.
+            s.current = to_return.?.next;
+
+            // 3. Return the vertex we saved at the beginning.
+            return to_return;
+        }
+    };
+
+    /// Path iterator.
+    pub fn pathIterator(self: *const Digraph, sink: VertexId) PathIterator {
+        return PathIterator.init(self, sink);
     }
 
     /// Performs a depth-first search of the graph, starting at the `Vertex`
@@ -537,3 +636,30 @@ pub const Digraph = struct {
         }
     }
 };
+
+test "dfsTo" {
+    const alloc = std.testing.allocator;
+    var G = try Digraph.init(alloc);
+    defer G.deinit();
+
+    const A = try G.addVertex("A");
+    const B = try G.addVertex("B");
+    const C = try G.addVertex("C");
+    const D = try G.addVertex("D");
+
+    // try G.connect(A, D, 1);
+    try G.connect(A, B, 2);
+    try G.connect(C, B, 2);
+    try G.connect(C, D, 2);
+    try G.connect(B, C, 1);
+
+    _ = try G.dfsTo(A, D);
+
+    var iter = G.pathIterator(D);
+    var v: *const Vertex = undefined;
+    while (iter.next()) |nextV| {
+        v = nextV;
+    }
+
+    try std.testing.expectEqualStrings("D", v.name);
+}
