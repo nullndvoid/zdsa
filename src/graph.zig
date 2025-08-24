@@ -339,6 +339,23 @@ pub const Digraph = struct {
             // 3. Return the vertex we saved at the beginning.
             return to_return;
         }
+
+        /// Peek at the next item in the iterator without advancing.
+        pub fn peek(s: *const Self) ?*Vertex {
+            if (s.current == null) return null;
+
+            return s.current.?.next;
+        }
+
+        /// Peek at next edge weight in the path.
+        pub fn peekNextWeight(s: *const Self) ?u32 {
+            const nextVtx = s.peek();
+            if (nextVtx == null or s.current == null) return null;
+
+            const id = nextVtx.?.getId();
+
+            return s.current.?.out.get(id.id);
+        }
     };
 
     /// Path iterator.
@@ -490,7 +507,7 @@ pub const Digraph = struct {
     ///
     /// Typically returns an error if allocations failed, i.e. OOM.
     pub fn kosaraju(self: *Digraph) !void {
-        if (self.kosarajuDirty) return;
+        if (!self.kosarajuDirty) return;
 
         self.kosarajuDirty = false;
 
@@ -635,6 +652,111 @@ pub const Digraph = struct {
             }
         }
     }
+
+    pub fn fordFulkerson(self: *const Digraph, source: VertexId, sink: VertexId) !usize {
+        // const sourceVtx = try self.getVertexById(source);
+        // const sinkVtx = try self.getVertexById(sink);
+
+        // Make the residual graph, so a copy of this one.
+        var residual = try self.clone();
+        defer residual.deinit();
+
+        // Total flow in the network.
+        var flow: usize = 0;
+
+        // Find an (s-t) path.
+        var found = try residual.dfsTo(source, sink);
+        while (found) {
+            var iter = residual.pathIterator(sink);
+
+            // Make a copy for after we consume the first iterator.
+            var iterSecondPass = PathIterator{
+                .current = iter.current,
+            };
+
+            var maxCap: u32 = std.math.maxInt(u32);
+
+            while (iter.next()) |_| {
+                // Capacity is the weight of the out edge to next vertex in path.
+                const nextWeight = iter.peekNextWeight();
+                if (nextWeight == null) break;
+
+                if (nextWeight.? < maxCap) maxCap = nextWeight.?;
+            }
+
+            // Add this max flow to total flow.
+            flow += maxCap;
+
+            // Now we have to flip saturated edges and create reverse edges
+            // for any extra capacity left (edge weight - maxCap).
+            while (iterSecondPass.next()) |v| {
+                const V = v.getId();
+                const w = iterSecondPass.peek();
+                const cap = iterSecondPass.peekNextWeight();
+
+                if (w == null) break; // Handles the last vertex.
+
+                const W = w.?.getId();
+
+                if (cap.? == maxCap) {
+                    // Flip the edge direction in graph.
+                    try residual.connect(W, V, cap.?);
+                    const worked = try residual.disconnect(V, W);
+                    if (!worked) @panic("Expected edge to exist!");
+                } else {
+                    // Forward edge weight updated to reflect remaining capacity.
+                    try v.out.put(W.id, cap.? - maxCap);
+                    // Backward edge created to undo as required.
+                    try residual.connect(W, V, maxCap);
+                }
+            }
+
+            // Now the residual graph should be up to date. Find a new path.
+            found = try residual.dfsTo(source, sink);
+        }
+
+        return flow;
+    }
+
+    /// Disconnects `v` from `w` by deleting the edge. Returns whether
+    /// or not the removal worked.
+    pub fn disconnect(self: *Digraph, v: VertexId, w: VertexId) !bool {
+        const V = try self.getVertexById(v);
+
+        return V.out.swapRemove(w.id);
+    }
+
+    /// Returns a copy of this `Digraph`. O(n) time complexity.
+    pub fn clone(self: *const Digraph) !Digraph {
+        var copy = try Digraph.init(self.alloc);
+
+        copy.currentIdx = self.currentIdx;
+        copy.djikstraDirty = self.djikstraDirty;
+        copy.kosarajuDirty = self.kosarajuDirty;
+        copy.topoSortDirty = self.topoSortDirty;
+        copy.lastSourceVertex = self.lastSourceVertex;
+
+        copy.explored = try self.explored.clone(copy.alloc);
+
+        const holes = try copy.alloc.dupe(VertexId, self.holes.items);
+        copy.holes = Digraph.Holes.fromOwnedSlice(copy.alloc, holes, {});
+
+        try copy.vertices.ensureTotalCapacity(self.vertices.items.len);
+
+        for (self.vertices.items) |original_v| {
+            var v_copy = original_v;
+
+            v_copy.name = try copy.alloc.dupe(u8, original_v.name);
+            v_copy.out = try original_v.out.clone();
+            v_copy.next = null;
+            v_copy.prev = null;
+            v_copy.distance = .Infinite;
+
+            try copy.vertices.append(v_copy);
+        }
+
+        return copy;
+    }
 };
 
 test "dfsTo" {
@@ -662,4 +784,31 @@ test "dfsTo" {
     }
 
     try std.testing.expectEqualStrings("D", v.name);
+}
+
+test "kosaraju" {
+    const alloc = std.testing.allocator;
+    var G = try Digraph.init(alloc);
+    defer G.deinit();
+
+    const A = try G.addVertex("A");
+    const B = try G.addVertex("B");
+    const C = try G.addVertex("C");
+    const D = try G.addVertex("D");
+
+    try G.connect(A, B, null);
+    try G.connect(B, C, null);
+    try G.connect(C, A, null);
+    try G.connect(D, C, null);
+
+    try G.kosaraju();
+
+    const a = try G.getVertexById(A);
+    const d = try G.getVertexById(D);
+
+    try std.testing.expect(a.sccNumber != d.sccNumber);
+
+    const c = try G.getVertexById(C);
+
+    try std.testing.expect(a.sccNumber == c.sccNumber);
 }
