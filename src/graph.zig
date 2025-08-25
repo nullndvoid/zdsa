@@ -122,7 +122,7 @@ pub const Digraph = struct {
     /// when no longer required.
     pub fn init(alloc: std.mem.Allocator) !Digraph {
         return Digraph{
-            .vertices = try std.ArrayList(Vertex).initCapacity(alloc, 0),
+            .vertices = std.ArrayList(Vertex).empty,
             .currentIdx = 0,
             .alloc = alloc,
             .holes = Holes.init(alloc, {}),
@@ -655,73 +655,50 @@ pub const Digraph = struct {
         defer residual.deinit();
 
         var flow: usize = 0;
-        const allocator = residual.alloc;
+        const alloc = residual.alloc;
 
-        while (true) {
-            // --- Find an augmenting path using Breadth-First Search (BFS) ---
-            var q = std.ArrayList(VertexId).empty;
-            defer q.deinit(allocator);
+        pathfinder: while (true) {
 
-            var edgeTo = std.HashMap(VertexId, VertexId, std.hash_map.AutoContext(VertexId), 80).init(allocator);
-            defer edgeTo.deinit();
-
-            try q.append(allocator, source);
-            var path_found = false;
-
-            while (q.items.len > 0) {
-                const V = q.orderedRemove(0);
-                if (V.id == sink.id) {
-                    path_found = true;
-                    break;
-                }
-
-                var adj_iter = try residual.getVertexById(V);
-                var out_iter = adj_iter.out.iterator();
-                while (out_iter.next()) |entry| {
-                    const W = VertexId{ .id = entry.key_ptr.* };
-                    const capacity = entry.value_ptr.*;
-
-                    // If edge has capacity and W is not yet visited
-                    if (capacity > 0 and !edgeTo.contains(W)) {
-                        try edgeTo.put(W, V); // Record parent pointer
-                        try q.append(allocator, W);
-                    }
-                }
-            }
-
-            if (!path_found) {
-                // No more augmenting paths exist
+            // Find a path on G_residual using DFS.
+            const maybePath = try residual.dfsTo(source, sink, alloc);
+            if (maybePath == null)
                 break;
-            }
 
-            // --- Reconstruct path and find bottleneck capacity ---
+            const path = maybePath.?;
+            defer alloc.free(path);
+
+            // Reconstruct path and find bottleneck capacity
             var path_bottleneck: u32 = std.math.maxInt(u32);
-            var current = sink;
-            while (current.id != source.id) {
-                const prev = edgeTo.get(current).?;
-                const weight = residual.getWeight(prev, current) orelse @panic("Path edge must exist");
-                path_bottleneck = @min(path_bottleneck, weight);
-                current = prev;
+            // const current = source;
+
+            for (path, 0..) |V, idx| {
+                // Handle last vertex.
+                if (idx + 1 >= path.len) break;
+
+                const W = path[idx + 1];
+
+                const capacity = residual.getWeight(V, W) orelse 0;
+
+                if (capacity == 0) continue :pathfinder;
+
+                path_bottleneck = @min(path_bottleneck, capacity);
             }
 
-            // --- Update residual graph along the path ---
-            current = sink;
-            while (current.id != source.id) {
-                const prev = edgeTo.get(current).?;
+            // Now fixup residual graph.
+            for (path, 0..) |V, idx| {
+                if (idx + 1 >= path.len) break;
+                const W = path[idx + 1];
 
-                // Decrease forward edge capacity
-                const forward_cap = residual.getWeight(prev, current) orelse 0;
-                _ = try residual.disconnect(prev, current);
-                if (forward_cap > path_bottleneck) {
-                    try residual.connect(prev, current, forward_cap - path_bottleneck);
+                const capacity = residual.getWeight(V, W).?;
+                const leftoverCapacity = capacity - path_bottleneck;
+
+                // If leftover capacity is 0, flip the edge.
+                if (leftoverCapacity == 0) {
+                    try residual.flipEdge(V, W);
+                } else {
+                    try residual.connect(W, V, path_bottleneck);
+                    try residual.connect(V, W, leftoverCapacity);
                 }
-
-                // Increase backward edge capacity
-                const backward_cap = residual.getWeight(current, prev) orelse 0;
-                _ = try residual.disconnect(current, prev);
-                try residual.connect(current, prev, backward_cap + path_bottleneck);
-
-                current = prev;
             }
 
             flow += path_bottleneck;
