@@ -122,7 +122,7 @@ pub const Digraph = struct {
     /// when no longer required.
     pub fn init(alloc: std.mem.Allocator) !Digraph {
         return Digraph{
-            .vertices = std.ArrayList(Vertex).init(alloc),
+            .vertices = try std.ArrayList(Vertex).initCapacity(alloc, 0),
             .currentIdx = 0,
             .alloc = alloc,
             .holes = Holes.init(alloc, {}),
@@ -158,7 +158,7 @@ pub const Digraph = struct {
         } else {
             id = .{ .id = self.currentIdx };
             v.setId(id);
-            try self.vertices.append(v);
+            try self.vertices.append(self.alloc, v);
             self.currentIdx += 1;
         }
 
@@ -167,6 +167,117 @@ pub const Digraph = struct {
         }
 
         return id;
+    }
+
+    /// A wrapper type for a pair (vertex, edge weight).
+    pub const VertexAndWeight = struct { vertex: *Vertex, weight: u32 };
+
+    pub const EdgeIterator = struct {
+        const Self = @This();
+
+        graph: *const Digraph,
+        vertex: *Vertex,
+        iter: std.AutoArrayHashMap(u32, u32).Iterator,
+
+        pub fn init(graph: *const Digraph, vertex: VertexId) !Self {
+            var v = try graph.getVertexById(vertex);
+            const iter = v.out.iterator();
+
+            return Self{
+                .vertex = v,
+                .iter = iter,
+                .graph = graph,
+            };
+        }
+
+        pub fn next(self: *Self) ?VertexAndWeight {
+            const n = self.iter.next();
+            if (n == null) return null;
+
+            const vertexId = VertexId{ .id = n.?.key_ptr.* };
+            const vertex = self.graph.getVertexById(vertexId) catch return null;
+
+            const edgeWeight = n.?.value_ptr.*;
+
+            return VertexAndWeight{ .vertex = vertex, .weight = edgeWeight };
+        }
+
+        // TODO: Test this works and add to the standard library.
+        pub fn peek(self: *Self) ?VertexAndWeight {
+            const vals = self.iter.values;
+            const keys = self.iter.keys;
+
+            if (self.iter.index + 1 >= self.iter.len) return null;
+
+            const nextIdx = self.iter.index + 1;
+
+            const val = VertexId{ .id = vals[nextIdx] };
+            const key = keys[nextIdx];
+
+            const vtx = self.graph.getVertexById(val) catch return null;
+
+            return VertexAndWeight{ .vertex = vtx, .weight = key };
+        }
+    };
+
+    pub fn dfsTo(self: *const Digraph, source: VertexId, sink: VertexId, alloc: std.mem.Allocator) !?[]VertexId {
+        // A map to store the path: edgeTo[child] = parent
+        var edgeTo = std.HashMap(VertexId, VertexId, std.hash_map.AutoContext(VertexId), 80).init(alloc);
+        defer edgeTo.deinit();
+
+        // Stack for the iterative DFS.
+        var stack = std.ArrayList(VertexId).empty;
+        defer stack.deinit(alloc);
+
+        // Use a separate set to track visited nodes to avoid re-visiting. TODO: Make this a bitset.
+        var visited = std.HashMap(VertexId, void, std.hash_map.AutoContext(VertexId), 80).init(alloc);
+        defer visited.deinit();
+
+        try stack.append(alloc, source);
+        try visited.put(source, {});
+
+        while (stack.pop()) |V| {
+            if (V.id == sink.id) {
+                // --- Path Found: Reconstruct it from the edgeTo map ---
+                var path = std.ArrayList(VertexId).empty;
+
+                var current = sink;
+                while (true) {
+                    try path.append(alloc, current);
+                    if (current.id == source.id) break;
+                    current = edgeTo.get(current).?;
+                }
+
+                // The path is currently sink -> source, so we reverse it
+                std.mem.reverse(VertexId, path.items);
+                return try path.toOwnedSlice(alloc);
+            }
+
+            var edges = try EdgeIterator.init(self, V);
+            while (edges.next()) |e| {
+                const W = e.vertex.getId();
+                if (!visited.contains(W)) {
+                    try visited.put(W, {});
+                    try edgeTo.put(W, V); // Record that we reached W from V
+                    try stack.append(alloc, W);
+                }
+            }
+        }
+
+        // Sink was not reached
+        return null;
+    }
+
+    /// Flips an edge in this graph.
+    pub fn flipEdge(self: *Digraph, v: VertexId, w: VertexId) !void {
+        try self.connect(w, v, self.getWeight(v, w));
+        _ = try self.disconnect(v, w);
+    }
+
+    pub fn getWeight(self: *const Digraph, v: VertexId, w: VertexId) ?u32 {
+        var V = self.getVertexById(v) catch unreachable;
+
+        return V.out.get(w.id);
     }
 
     /// Removes a `Vertex` from the graph.
@@ -222,10 +333,10 @@ pub const Digraph = struct {
     pub fn bfs(self: *Digraph, start_id: VertexId) !void {
         const s = try self.getVertexById(start_id);
 
-        var queue = std.ArrayList(VertexId).init(self.alloc);
-        defer queue.deinit();
+        var queue = std.ArrayList(VertexId).empty;
+        defer queue.deinit(self.alloc);
 
-        try queue.append(s.getId());
+        try queue.append(self.alloc, s.getId());
         self.explored.set(s.getId().id);
 
         var i: usize = 0;
@@ -241,126 +352,12 @@ pub const Digraph = struct {
                 const neighbor_id = w.key_ptr.*;
                 if (!self.explored.isSet(neighbor_id)) {
                     self.explored.set(neighbor_id);
-                    try queue.append(.{ .id = neighbor_id });
+                    try queue.append(self.alloc, .{ .id = neighbor_id });
                 }
             }
         }
 
         self.explored.unmanaged.unsetAll();
-    }
-
-    fn setForwardPointers(self: *Digraph, sink: *Vertex) void {
-        var v = sink;
-        while (v.prev) |id| {
-            const prev = self.getVertexById(id) catch unreachable;
-
-            // Update next pointer.
-            prev.next = v;
-
-            v = prev;
-        }
-    }
-
-    /// Finds a path from a source to a sink vertex via DFS and stores it
-    /// using the `prev` pointers on each Vertex.
-    pub fn dfsTo(self: *Digraph, from: VertexId, to: VertexId) !bool {
-        const T = try self.getVertexById(to);
-
-        // Reset previous path data
-        for (self.vertices.items) |*v| {
-            v.prev = null;
-        }
-
-        var stack = std.ArrayList(VertexId).init(self.alloc);
-        defer stack.deinit();
-
-        self.explored.unmanaged.unsetAll();
-
-        try stack.append(from);
-        self.explored.set(from.id);
-
-        while (stack.pop()) |v_id| {
-            if (v_id.id == T.getId().id) {
-                // We found the destination, path is complete.
-                self.setForwardPointers(T);
-                return true;
-            }
-
-            const vtx = self.getVertexById(v_id) catch unreachable;
-            var iter = vtx.out.iterator();
-            while (iter.next()) |entry| {
-                const neighbourId = VertexId{ .id = entry.key_ptr.* };
-                if (!self.explored.isSet(neighbourId.id)) {
-                    self.explored.set(neighbourId.id);
-
-                    // Set the predecessor of the neighbor to the current vertex
-                    const w = self.getVertexById(neighbourId) catch unreachable;
-                    w.prev = v_id;
-
-                    try stack.append(neighbourId);
-                }
-            }
-        }
-
-        // Destination was not reachable. Forward pointers will be undefined.
-        return false;
-    }
-
-    pub const PathIterator = struct {
-        current: ?*Vertex = null,
-
-        const Self = @This();
-
-        pub fn init(g: *const Digraph, sink: VertexId) Self {
-            var vtx = g.getVertexById(sink) catch unreachable;
-
-            while (vtx.prev != null) {
-                // if (vtx.prev == null) break;
-                const prev = g.getVertexById(vtx.prev.?) catch unreachable;
-                vtx = prev;
-            }
-
-            return Self{ .current = vtx };
-        }
-
-        pub fn next(s: *Self) ?*Vertex {
-            // 1. Save the vertex we're going to return this iteration.
-            const to_return = s.current;
-
-            // If the iterator is already finished (current is null), just return null.
-            if (to_return == null) {
-                return null;
-            }
-
-            // 2. Advance our internal state for the *next* call.
-            //    to_return is a `?*Vertex`, so we use `.?` to access its `next` field.
-            s.current = to_return.?.next;
-
-            // 3. Return the vertex we saved at the beginning.
-            return to_return;
-        }
-
-        /// Peek at the next item in the iterator without advancing.
-        pub fn peek(s: *const Self) ?*Vertex {
-            if (s.current == null) return null;
-
-            return s.current.?.next;
-        }
-
-        /// Peek at next edge weight in the path.
-        pub fn peekNextWeight(s: *const Self) ?u32 {
-            const nextVtx = s.peek();
-            if (nextVtx == null or s.current == null) return null;
-
-            const id = nextVtx.?.getId();
-
-            return s.current.?.out.get(id.id);
-        }
-    };
-
-    /// Path iterator.
-    pub fn pathIterator(self: *const Digraph, sink: VertexId) PathIterator {
-        return PathIterator.init(self, sink);
     }
 
     /// Performs a depth-first search of the graph, starting at the `Vertex`
@@ -369,30 +366,30 @@ pub const Digraph = struct {
     pub fn dfs(self: *Digraph, start_id: VertexId) ![]Vertex {
         const S = try self.getVertexById(start_id);
 
-        var stack = std.ArrayList(VertexId).init(self.alloc);
-        defer stack.deinit();
-        var result = std.ArrayList(Vertex).init(self.alloc);
+        var stack = std.ArrayList(VertexId).empty;
+        defer stack.deinit(self.alloc);
+        var result = std.ArrayList(Vertex).empty;
 
         self.explored.unmanaged.unsetAll();
 
-        try stack.append(S.getId());
+        try stack.append(self.alloc, S.getId());
         self.explored.set(S.getId().id);
 
         while (stack.pop()) |v_id| {
             const v = self.vertices.items[v_id.id];
-            try result.append(v);
+            try result.append(self.alloc, v);
 
             var iter = v.out.iterator();
             while (iter.next()) |entry| {
                 const neighbor_id = entry.key_ptr.*;
                 if (!self.explored.isSet(neighbor_id)) {
                     self.explored.set(neighbor_id);
-                    try stack.append(.{ .id = neighbor_id });
+                    try stack.append(self.alloc, .{ .id = neighbor_id });
                 }
             }
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(self.alloc);
     }
 
     /// Frees allocated memory for the graph. Attempting to use the graph after
@@ -402,7 +399,7 @@ pub const Digraph = struct {
             self.alloc.free(v.name);
             v.out.deinit();
         }
-        self.vertices.deinit();
+        self.vertices.deinit(self.alloc);
         self.holes.deinit();
         self.explored.deinit();
     }
@@ -452,8 +449,8 @@ pub const Digraph = struct {
 
     /// Returns an increasing order priority queue sorting vertices by f(v) (`toposort` field).
     pub fn topoSortQueue(self: *Digraph) !TopoSortQueue {
-        var ownedVertices = try self.vertices.clone();
-        const ownedVerticesSlice = try ownedVertices.toOwnedSlice();
+        var ownedVertices = try self.vertices.clone(self.alloc);
+        const ownedVerticesSlice = try ownedVertices.toOwnedSlice(self.alloc);
         return TopoSortQueue.fromOwnedSlice(self.alloc, ownedVerticesSlice, {});
     }
 
@@ -462,14 +459,14 @@ pub const Digraph = struct {
     /// each edge is examined once only.
     pub fn transpose(self: *const Digraph, alloc: std.mem.Allocator) !Digraph {
         var reverseGraph = try Digraph.init(alloc);
-        try reverseGraph.vertices.ensureTotalCapacity(self.vertices.items.len);
+        try reverseGraph.vertices.ensureTotalCapacity(alloc, self.vertices.items.len);
 
         for (self.vertices.items) |v| {
             var vCopy = v;
             vCopy.name = try alloc.dupe(u8, v.name);
             vCopy.out = std.AutoArrayHashMap(u32, u32).init(alloc);
 
-            try reverseGraph.vertices.append(vCopy);
+            try reverseGraph.vertices.append(self.alloc, vCopy);
         }
 
         const holes = try alloc.dupe(VertexId, self.holes.items);
@@ -527,10 +524,10 @@ pub const Digraph = struct {
                 continue;
             }
 
-            var stack = std.ArrayList(u32).init(self.alloc);
-            defer stack.deinit();
+            var stack = std.ArrayList(u32).empty;
+            defer stack.deinit(self.alloc);
 
-            try stack.append(start_id);
+            try stack.append(self.alloc, start_id);
             self.explored.set(start_id);
 
             while (stack.pop()) |curr_id| {
@@ -542,7 +539,7 @@ pub const Digraph = struct {
                     const neighbor_id = entry.key_ptr.*;
                     if (!self.explored.isSet(neighbor_id)) {
                         self.explored.set(neighbor_id);
-                        try stack.append(neighbor_id);
+                        try stack.append(self.alloc, neighbor_id);
                     }
                 }
             }
@@ -654,65 +651,80 @@ pub const Digraph = struct {
     }
 
     pub fn fordFulkerson(self: *const Digraph, source: VertexId, sink: VertexId) !usize {
-        // const sourceVtx = try self.getVertexById(source);
-        // const sinkVtx = try self.getVertexById(sink);
-
-        // Make the residual graph, so a copy of this one.
         var residual = try self.clone();
         defer residual.deinit();
 
-        // Total flow in the network.
         var flow: usize = 0;
+        const allocator = residual.alloc;
 
-        // Find an (s-t) path.
-        var found = try residual.dfsTo(source, sink);
-        while (found) {
-            var iter = residual.pathIterator(sink);
+        while (true) {
+            // --- Find an augmenting path using Breadth-First Search (BFS) ---
+            var q = std.ArrayList(VertexId).empty;
+            defer q.deinit(allocator);
 
-            // Make a copy for after we consume the first iterator.
-            var iterSecondPass = PathIterator{
-                .current = iter.current,
-            };
+            var edgeTo = std.HashMap(VertexId, VertexId, std.hash_map.AutoContext(VertexId), 80).init(allocator);
+            defer edgeTo.deinit();
 
-            var maxCap: u32 = std.math.maxInt(u32);
+            try q.append(allocator, source);
+            var path_found = false;
 
-            while (iter.next()) |_| {
-                // Capacity is the weight of the out edge to next vertex in path.
-                const nextWeight = iter.peekNextWeight();
-                if (nextWeight == null) break;
+            while (q.items.len > 0) {
+                const V = q.orderedRemove(0);
+                if (V.id == sink.id) {
+                    path_found = true;
+                    break;
+                }
 
-                if (nextWeight.? < maxCap) maxCap = nextWeight.?;
-            }
+                var adj_iter = try residual.getVertexById(V);
+                var out_iter = adj_iter.out.iterator();
+                while (out_iter.next()) |entry| {
+                    const W = VertexId{ .id = entry.key_ptr.* };
+                    const capacity = entry.value_ptr.*;
 
-            // Add this max flow to total flow.
-            flow += maxCap;
-
-            // Now we have to flip saturated edges and create reverse edges
-            // for any extra capacity left (edge weight - maxCap).
-            while (iterSecondPass.next()) |v| {
-                const V = v.getId();
-                const w = iterSecondPass.peek();
-                const cap = iterSecondPass.peekNextWeight();
-
-                if (w == null) break; // Handles the last vertex.
-
-                const W = w.?.getId();
-
-                if (cap.? == maxCap) {
-                    // Flip the edge direction in graph.
-                    try residual.connect(W, V, cap.?);
-                    const worked = try residual.disconnect(V, W);
-                    if (!worked) @panic("Expected edge to exist!");
-                } else {
-                    // Forward edge weight updated to reflect remaining capacity.
-                    try v.out.put(W.id, cap.? - maxCap);
-                    // Backward edge created to undo as required.
-                    try residual.connect(W, V, maxCap);
+                    // If edge has capacity and W is not yet visited
+                    if (capacity > 0 and !edgeTo.contains(W)) {
+                        try edgeTo.put(W, V); // Record parent pointer
+                        try q.append(allocator, W);
+                    }
                 }
             }
 
-            // Now the residual graph should be up to date. Find a new path.
-            found = try residual.dfsTo(source, sink);
+            if (!path_found) {
+                // No more augmenting paths exist
+                break;
+            }
+
+            // --- Reconstruct path and find bottleneck capacity ---
+            var path_bottleneck: u32 = std.math.maxInt(u32);
+            var current = sink;
+            while (current.id != source.id) {
+                const prev = edgeTo.get(current).?;
+                const weight = residual.getWeight(prev, current) orelse @panic("Path edge must exist");
+                path_bottleneck = @min(path_bottleneck, weight);
+                current = prev;
+            }
+
+            // --- Update residual graph along the path ---
+            current = sink;
+            while (current.id != source.id) {
+                const prev = edgeTo.get(current).?;
+
+                // Decrease forward edge capacity
+                const forward_cap = residual.getWeight(prev, current) orelse 0;
+                _ = try residual.disconnect(prev, current);
+                if (forward_cap > path_bottleneck) {
+                    try residual.connect(prev, current, forward_cap - path_bottleneck);
+                }
+
+                // Increase backward edge capacity
+                const backward_cap = residual.getWeight(current, prev) orelse 0;
+                _ = try residual.disconnect(current, prev);
+                try residual.connect(current, prev, backward_cap + path_bottleneck);
+
+                current = prev;
+            }
+
+            flow += path_bottleneck;
         }
 
         return flow;
@@ -741,7 +753,7 @@ pub const Digraph = struct {
         const holes = try copy.alloc.dupe(VertexId, self.holes.items);
         copy.holes = Digraph.Holes.fromOwnedSlice(copy.alloc, holes, {});
 
-        try copy.vertices.ensureTotalCapacity(self.vertices.items.len);
+        try copy.vertices.ensureTotalCapacity(self.alloc, self.vertices.items.len);
 
         for (self.vertices.items) |original_v| {
             var v_copy = original_v;
@@ -752,7 +764,7 @@ pub const Digraph = struct {
             v_copy.prev = null;
             v_copy.distance = .Infinite;
 
-            try copy.vertices.append(v_copy);
+            try copy.vertices.append(self.alloc, v_copy);
         }
 
         return copy;
@@ -775,15 +787,14 @@ test "dfsTo" {
     try G.connect(C, D, 2);
     try G.connect(B, C, 1);
 
-    _ = try G.dfsTo(A, D);
+    const path = try G.dfsTo(A, D, alloc);
+    try std.testing.expect(path != null);
+    defer alloc.free(path.?);
 
-    var iter = G.pathIterator(D);
-    var v: *const Vertex = undefined;
-    while (iter.next()) |nextV| {
-        v = nextV;
-    }
+    const lastId = path.?[path.?.len - 1];
+    const lastVtx = try G.getVertexById(lastId);
 
-    try std.testing.expectEqualStrings("D", v.name);
+    try std.testing.expectEqualStrings("D", lastVtx.name);
 }
 
 test "kosaraju" {
@@ -811,4 +822,73 @@ test "kosaraju" {
     const c = try G.getVertexById(C);
 
     try std.testing.expect(a.sccNumber == c.sccNumber);
+}
+
+test "fordFulkerson" {
+    const alloc = std.testing.allocator;
+    var G = try Digraph.init(alloc);
+    defer G.deinit();
+
+    const A = try G.addVertex("A");
+    const B = try G.addVertex("B");
+    const C = try G.addVertex("C");
+
+    try G.connect(A, B, 12);
+    try G.connect(B, C, 2);
+    try G.connect(A, C, 10);
+
+    const maxFlow = try G.fordFulkerson(A, C);
+
+    try std.testing.expectEqual(12, maxFlow);
+}
+
+fn dfsToRun() !Digraph {
+    const alloc = std.testing.allocator;
+    var G = try Digraph.init(alloc);
+
+    const A = try G.addVertex("A");
+    const B = try G.addVertex("B");
+    const C = try G.addVertex("C");
+
+    try G.connect(A, B, 12);
+    try G.connect(B, C, 2);
+    try G.connect(A, C, 10);
+
+    const path = try G.dfsTo(A, C, alloc);
+    try std.testing.expect(path != null);
+    defer alloc.free(path.?);
+
+    const lastVtx = try G.getVertexById(path.?[path.?.len - 1]);
+    try std.testing.expectEqualStrings(
+        "C",
+        lastVtx.name,
+    );
+
+    return G;
+}
+
+test "dfsToCheckBuggyInputWorksNow" {
+    var G = try dfsToRun();
+    G.deinit();
+}
+
+test "dfsToAfterGraphUpdate" {
+    var G = try dfsToRun();
+    defer G.deinit();
+
+    const A = VertexId{ .id = 0 };
+    const B = VertexId{ .id = 1 };
+    const C = VertexId{ .id = 2 };
+
+    _ = try G.disconnect(B, C);
+
+    try G.connect(C, B, 2);
+    try G.connect(B, A, 2);
+    try G.connect(A, B, 10);
+
+    const reachable = try G.dfsTo(A, C, G.alloc);
+
+    try std.testing.expect(reachable != null);
+
+    G.alloc.free(reachable.?);
 }
