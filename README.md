@@ -21,13 +21,16 @@ Implementations of common data structures and algorithms in Zig. This repository
 * Depth-First Search (DFS)
 * Topological Sort
 * Kosaraju's Algorithm for finding Strongly Connected Components (SCCs)
+* Ford-Fulkerson (max flow)
+* Dijkstra's shortest path.
 
 #### Classic Problems
 * Two Sum
 
 ## TODO
 
-* A Dijkstra's shortest path and/or A* implementation.
+* Dinic's algorithm
+* Prim's algorithm (also needs undirected graphs)
 
 ## Authors
 
