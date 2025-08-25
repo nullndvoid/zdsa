@@ -41,7 +41,9 @@ pub fn PriorityQueue(comptime T: type, comptime orderFn: fn (T, T) std.math.Orde
         }
 
         pub fn fromOwnedSlice(alloc: Allocator, slice: []T) Self {
-            var self = Self{ .items = std.ArrayList(T).fromOwnedSlice(alloc, slice) };
+            _ = alloc;
+
+            var self = Self{ .items = std.ArrayList(T).fromOwnedSlice(slice) };
             if (self.items.items.len == 0) return self;
 
             var i: isize = @as(isize, @intCast(self.items.items.len / 2)) - 1;
