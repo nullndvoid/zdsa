@@ -19,7 +19,18 @@ pub fn build(b: *std.Build) void {
 
     b.default_step.dependOn(&exe.step);
 
-    b.installArtifact(exe);
+    const no_bin = b.option(bool, "no-bin", "Do not emit a binary, use when checking for errors.") orelse false;
+
+    if (no_bin) {
+        b.getInstallStep().dependOn(&exe.step);
+    } else {
+        const install_exe = b.addInstallArtifact(exe, .{
+            .dest_dir = .default,
+        });
+        b.getInstallStep().dependOn(&install_exe.step);
+    }
+
+    // b.installArtifact(exe);
 
     const run_step = b.step("run", "Run the app");
 
